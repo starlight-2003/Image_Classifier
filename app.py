@@ -1,97 +1,53 @@
 import os
-import sys
-
-# Flask
-from flask import Flask, redirect, url_for, request, render_template, Response, jsonify, redirect
+import numpy as np
+from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 from gevent.pywsgi import WSGIServer
-
-# TensorFlow and tf.keras
-import tensorflow as tf
-from tensorflow import keras
-
-from tensorflow.keras.applications.imagenet_utils import preprocess_input, decode_predictions
-from tensorflow.keras.models import load_model
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input, decode_predictions
 from tensorflow.keras.preprocessing import image
-
-# Some utilites
-import numpy as np
-from util import base64_to_pil
+from PIL import Image
 
 
-# Declare a flask app
+# Khởi tạo Flask app
 app = Flask(__name__)
 
-
-# You can use pretrained model from Keras
-# Check https://keras.io/applications/
-# or https://www.tensorflow.org/api_docs/python/tf/keras/applications
-
-from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
+# Load model chỉ một lần khi khởi động
 model = MobileNetV2(weights='imagenet')
 
-print('Model loaded. Check http://127.0.0.1:5000/')
 
-
-# Model saved with Keras model.save()
-MODEL_PATH = 'models/your_model.h5'
-
-# Load your own trained model
-# model = load_model(MODEL_PATH)
-# model._make_predict_function()          # Necessary
-# print('Model loaded. Start serving...')
-
-
-def model_predict(img, model):
+# Hàm dự đoán
+def model_predict(img):
     img = img.resize((224, 224))
-
-    # Preprocessing the image
-    x = image.img_to_array(img)
-    # x = np.true_divide(x, 255)
-    x = np.expand_dims(x, axis=0)
-
-    # Be careful how your trained model deals with the input
-    # otherwise, it won't make correct prediction!
-    x = preprocess_input(x, mode='tf')
+    x = np.expand_dims(image.img_to_array(img), axis=0)
+    x = preprocess_input(x)  # Chỉnh đầu vào theo chuẩn của MobileNetV2
 
     preds = model.predict(x)
-    return preds
+    return decode_predictions(preds, top=1)[0][0]  # Lấy dự đoán cao nhất
 
 
 @app.route('/', methods=['GET'])
 def index():
-    # Main page
     return render_template('index.html')
 
 
-@app.route('/predict', methods=['GET', 'POST'])
+@app.route('/predict', methods=['POST'])
 def predict():
-    if request.method == 'POST':
-        # Get the image from post request
-        img = base64_to_pil(request.json)
+    try:
+        # Lấy ảnh từ request
+        img_data = request.json
+        img = Image.open(img_data)
 
-        # Save the image to ./uploads
-        # img.save("./uploads/image.png")
+        # Dự đoán kết quả
+        pred_class, _, pred_proba = model_predict(img)
 
-        # Make prediction
-        preds = model_predict(img, model)
-
-        # Process your result for human
-        pred_proba = "{:.3f}".format(np.amax(preds))    # Max probability
-        pred_class = decode_predictions(preds, top=1)   # ImageNet Decode
-
-        result = str(pred_class[0][0][1])               # Convert to string
-        result = result.replace('_', ' ').capitalize()
-        
-        # Serialize the result, you can add additional fields
-        return jsonify(result=result, probability=pred_proba)
-
-    return None
+        return jsonify({
+            "result": pred_class.replace('_', ' ').capitalize(),
+            "probability": "{:.3f}".format(pred_proba)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 if __name__ == '__main__':
-    # app.run(port=5002, threaded=False)
-
-    # Serve the app with gevent
     http_server = WSGIServer(('0.0.0.0', 5000), app)
     http_server.serve_forever()
